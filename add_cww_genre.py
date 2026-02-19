@@ -17,6 +17,7 @@ from beets.library import Library, Item
 GENRE_TAG = "CWW"
 
 DEFAULT_INPUT_JSON = "episodes.json"
+DEFAULT_CACHE_FILE = "artist_cache.json"
 PREVIEW_FILE = "cww_tag_preview.json"
 
 
@@ -36,6 +37,38 @@ def normalize(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
 
     return text
+
+
+def load_artist_cache(path: str) -> dict[str, Any]:
+    """Load artist cache from JSON file."""
+    if Path(path).exists():
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def get_canonical_artist(
+    artist_raw: str,
+    cache: dict[str, Any],
+) -> str:
+    """
+    Get canonical artist name from cache.
+    
+    Tries: exact match -> normalized match -> returns original.
+    """
+    if not artist_raw or not cache:
+        return artist_raw
+
+    # Try exact match first
+    if artist_raw in cache:
+        return cache[artist_raw].get("canonical_name") or cache[artist_raw].get("original") or artist_raw
+
+    # Try normalized
+    normalized = normalize(artist_raw)
+    if normalized in cache:
+        return cache[normalized].get("canonical_name") or cache[normalized].get("original") or artist_raw
+
+    return artist_raw
 
 
 # ----------------------------
@@ -87,28 +120,51 @@ def build_index(lib: Library) -> dict[str, list[tuple[str, Item]]]:
 def find_matches(
     data: list[dict[str, Any]],
     artist_index: dict[str, list[tuple[str, Item]]],
+    artist_cache: dict[str, Any] | None = None,
 ) -> list[Item]:
-    """Find matching tracks in the beets library."""
+    """Find matching tracks in the beets library using artist cache for canonical names."""
     matches: list[Item] = []
     seen_items: set[int] = set()
-    seen_items = set()
+    cache_used = 0
+    direct_matches = 0
+
+    if artist_cache is None:
+        artist_cache = {}
 
     for episode in data:
         for track in episode.get("tracklist", []):
             artist_raw = track.get("artist", "")
             title_raw = track.get("track", "")
 
-            artist = normalize(artist_raw)
+            # Try to get canonical artist name from cache
+            canonical_artist = get_canonical_artist(artist_raw, artist_cache)
+            
+            # Normalize the canonical name for matching
+            artist = normalize(canonical_artist)
             title = normalize(title_raw)
 
             if artist not in artist_index:
-                continue
+                # Fall back to original normalized name if cache didn't help
+                if canonical_artist != artist_raw:
+                    artist = normalize(artist_raw)
+                    if artist not in artist_index:
+                        continue
+                else:
+                    continue
 
             for lib_title, item in artist_index[artist]:
                 if lib_title == title:
                     if item.id not in seen_items:
                         matches.append(item)
                         seen_items.add(item.id)
+                        if canonical_artist != artist_raw:
+                            cache_used += 1
+                        else:
+                            direct_matches += 1
+
+    if artist_cache:
+        print(f"  Direct matches: {direct_matches}")
+        print(f"  Cache-assisted matches: {cache_used}")
 
     return matches
 
@@ -155,6 +211,16 @@ def main() -> None:
         default=DEFAULT_INPUT_JSON,
         help="Path to episodes JSON file",
     )
+    parser.add_argument(
+        "--cache",
+        default=DEFAULT_CACHE_FILE,
+        help="Path to artist cache JSON file",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Skip using artist cache for matching",
+    )
 
     args = parser.parse_args()
 
@@ -170,6 +236,13 @@ def main() -> None:
         print(f"Error: Invalid JSON in {args.input}: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Load artist cache
+    artist_cache: dict[str, Any] = {}
+    if not args.no_cache:
+        print(f"Loading artist cache from {args.cache}...")
+        artist_cache = load_artist_cache(args.cache)
+        print(f"  Cache entries: {len(artist_cache)}")
+
     print("Loading beets library...")
     lib = load_library()
 
@@ -177,7 +250,7 @@ def main() -> None:
     artist_index = build_index(lib)
 
     print("Finding matches...")
-    matches = find_matches(data, artist_index)
+    matches = find_matches(data, artist_index, artist_cache if not args.no_cache else None)
 
     print(f"Tracks to tag: {len(matches)}")
 
