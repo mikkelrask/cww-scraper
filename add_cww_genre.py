@@ -99,34 +99,6 @@ def load_library() -> Library:
     return Library(library_path)
 
 
-def build_index(lib: Library) -> dict[str, list[tuple[str, Item]]]:
-    """Build an index of artists and titles from the beets library."""
-    artist_index: dict[str, list[tuple[str, Item]]] = defaultdict(list)
-
-    for item in lib.items():
-        artist = normalize(item.artist)
-        title = normalize(item.title)
-
-        if artist and title:
-            artist_index[artist].append((title, item))
-
-    return artist_index
-
-
-def build_mbid_index(lib: Library) -> dict[str, list[tuple[str, Item]]]:
-    """Build an index by MusicBrainz artist ID from the beets library."""
-    mbid_index: dict[str, list[tuple[str, Item]]] = defaultdict(list)
-
-    for item in lib.items():
-        mb_artist_id = getattr(item, "mb_artist_id", None)
-        if mb_artist_id:
-            title = normalize(item.title)
-            if title:
-                mbid_index[mb_artist_id].append((title, item))
-
-    return mbid_index
-
-
 def get_artist_mbid(
     artist_raw: str,
     cache: dict[str, Any],
@@ -153,54 +125,48 @@ def get_artist_mbid(
 
 def find_matches(
     data: list[dict[str, Any]],
-    artist_index: dict[str, list[tuple[str, Item]]],
-    mbid_index: dict[str, list[tuple[str, Item]]],
+    lib: Library,
     artist_cache: dict[str, Any] | None = None,
 ) -> list[Item]:
-    """Find matching tracks in the beets library using MBID or name matching."""
+    """Find matching tracks in the beets library."""
     matches: list[Item] = []
     seen_items: set[int] = set()
-    mbid_matches = 0
     name_matches = 0
 
     if artist_cache is None:
         artist_cache = {}
 
+    # Build a set of (artist, title) tuples from scraped data for fast lookup
+    print("  Building scraped tracks index...", flush=True)
+    scraped_tracks: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for episode in data:
         for track in episode.get("tracklist", []):
             artist_raw = track.get("artist", "")
             title_raw = track.get("track", "")
-            title = normalize(title_raw)
+            if artist_raw and title_raw:
+                key = (normalize(artist_raw), normalize(title_raw))
+                scraped_tracks[key].append(track)
 
-            matched = False
+    print(f"  Unique scraped tracks: {len(scraped_tracks)}", flush=True)
+    print("  Searching beets library...", flush=True)
 
-            # Try MBID matching first (more reliable)
-            if artist_cache and mbid_index:
-                mbid = get_artist_mbid(artist_raw, artist_cache)
-                if mbid and mbid in mbid_index:
-                    for lib_title, item in mbid_index[mbid]:
-                        if lib_title == title and item.id not in seen_items:
-                            matches.append(item)
-                            seen_items.add(item.id)
-                            mbid_matches += 1
-                            matched = True
-                            break
+    count = 0
+    for item in lib.items():
+        count += 1
+        if count % 5000 == 0:
+            print(f"    Checked {count} library items...", flush=True)
 
-            # Fall back to name matching if no MBID match
-            if not matched:
-                artist = normalize(artist_raw)
-                if artist in artist_index:
-                    for lib_title, item in artist_index[artist]:
-                        if lib_title == title and item.id not in seen_items:
-                            matches.append(item)
-                            seen_items.add(item.id)
-                            name_matches += 1
-                            matched = True
-                            break
+        item_artist = normalize(item.artist)
+        item_title = normalize(item.title)
+        key = (item_artist, item_title)
 
-    if artist_cache:
-        print(f"  MBID matches: {mbid_matches}")
-        print(f"  Name matches: {name_matches}")
+        if key in scraped_tracks and item.id not in seen_items:
+            matches.append(item)
+            seen_items.add(item.id)
+            name_matches += 1
+
+    print(f"    Checked {count} library items - done!")
+    print(f"  Name matches: {name_matches}")
 
     return matches
 
@@ -282,17 +248,10 @@ def main() -> None:
     print("Loading beets library...")
     lib = load_library()
 
-    print("Indexing library...")
-    artist_index = build_index(lib)
-    mbid_index = build_mbid_index(lib)
-    print(f"  Artists indexed: {len(artist_index)}")
-    print(f"  MBID entries indexed: {len(mbid_index)}")
-
     print("Finding matches...")
     matches = find_matches(
         data,
-        artist_index,
-        mbid_index,
+        lib,
         artist_cache if not args.no_cache else None,
     )
 
