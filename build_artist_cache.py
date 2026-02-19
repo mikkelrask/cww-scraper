@@ -61,6 +61,8 @@ def extract_artists(episodes: list[dict]) -> list[tuple[str, int]]:
 
 def load_beets_library() -> dict[str, dict[str, Any]]:
     """Load artists from beets library for local matching."""
+    import re  # Ensure re is imported
+
     try:
         config.read()
         library_path = config["library"].as_filename()
@@ -76,13 +78,14 @@ def load_beets_library() -> dict[str, dict[str, Any]]:
         print(f"  Warning: Library file not found: {library_path}", file=sys.stderr)
         return {}
 
+    print(f"  Opening library...", flush=True)
     try:
         lib = Library(library_path)
     except Exception as e:
         print(f"  Warning: Could not open library: {e}", file=sys.stderr)
         return {}
 
-    print(f"  Loading unique artists from {library_path}...")
+    print(f"  Loading artists from {library_path}...", flush=True)
 
     artists: dict[str, dict[str, Any]] = {}
 
@@ -92,26 +95,23 @@ def load_beets_library() -> dict[str, dict[str, Any]]:
             artist = item.artist
             if artist:
                 normalized = normalize(artist)
-                # Only add if not already in dict
                 if artist not in artists:
                     artists[artist] = {
                         "source": "beets",
                         "original": artist,
-                        "mbid": getattr(item, "mb_artist_id", None),
                     }
                 if normalized not in artists:
                     artists[normalized] = {
                         "source": "beets",
                         "original": artist,
-                        "mbid": getattr(item, "mb_artist_id", None),
                     }
             count += 1
             if count % 5000 == 0:
-                print(f"    {count} items processed...")
+                print(f"    {count} items processed...", flush=True)
     except Exception as e:
         print(f"  Warning: Error loading items: {e}", file=sys.stderr)
 
-    print(f"  Loaded {len(artists)} unique artist names")
+    print(f"  Loaded {len(artists)} unique artist names", flush=True)
     return artists
 
 
@@ -271,13 +271,16 @@ def main():
 
     print(f"Found {len(artists)} unique artists")
     print(f"Total tracks: {sum(c for _, c in artists)}")
+    sys.stdout.flush()
 
     # Load beets library for local matching
     beets_artists: dict[str, dict] = {}
     if not args.no_beets:
         print("Loading beets library...")
+        sys.stdout.flush()
         beets_artists = load_beets_library()
         print(f"Beets artists: {len(beets_artists)}")
+        sys.stdout.flush()
 
     cache = load_cache(args.cache)
     print(f"Existing cache entries: {len(cache)}")
