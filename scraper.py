@@ -13,6 +13,28 @@ from urllib.parse import urljoin, unquote
 
 BASE_URL = "https://www.chanceswithwolves.com"
 OUTPUT_FILE = "episodes.json"
+LATEST_EPISODE_INFO_FILE = "latest_episode_info.json"
+
+def _get_episode_number_from_url(url: str) -> int | None:
+    """Extracts the episode number from a URL like '.../episode-XXX'."""
+    match = re.search(r"episode-(\d+)", url)
+    if match:
+        return int(match.group(1))
+    return None
+
+def read_latest_episode_info() -> str | None:
+    """Reads the URL of the last scraped episode from the info file."""
+    try:
+        with open(LATEST_EPISODE_INFO_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("latest_episode_url")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+def write_latest_episode_info(latest_episode_url: str):
+    """Writes the URL of the latest scraped episode to the info file."""
+    with open(LATEST_EPISODE_INFO_FILE, "w", encoding="utf-8") as f:
+        json.dump({"latest_episode_url": latest_episode_url}, f, indent=2)
 
 
 def get_soup(url, retries=3):
@@ -33,28 +55,59 @@ def get_soup(url, retries=3):
 
 
 def extract_episode_links(soup):
-    """Extract all episode URLs from a page."""
-    links = set()
-    for a in soup.find_all("a", class_="masonry-link"):
-        href = a.get("href")
-        if href:
-            full_url = urljoin(BASE_URL, href)
-            if "/episode-" in full_url or full_url.startswith(BASE_URL):
-                links.add(full_url)
-    return sorted(links)
+    """Extract all episode URLs from a page and sort by episode number."""
+    episode_urls_with_numbers = []
+    other_urls = []
+
+    for article in soup.find_all("article", class_="masonry-item"):
+        a_tag = article.find("a", class_="masonry-link")
+        if a_tag:
+            href = a_tag.get("href")
+            if href:
+                full_url = urljoin(BASE_URL, href)
+                episode_number = _get_episode_number_from_url(full_url)
+                if episode_number is not None:
+                    episode_urls_with_numbers.append((episode_number, full_url))
+                # Keep other valid episode-like URLs that might not have a clear number
+                # but are part of the main site content, e.g., special mixes,
+                # ensuring they don't get sorted by non-existent numbers.
+                elif "/episode-" in full_url or full_url.startswith(BASE_URL):
+                    other_urls.append(full_url)
+
+    # Sort episodes by number in descending order
+    episode_urls_with_numbers.sort(key=lambda x: x[0], reverse=True)
+
+    # Extract just the URLs from the sorted list
+    sorted_urls = [url for _, url in episode_urls_with_numbers]
+
+    # Append other URLs (like special mixes) at the end, sorted alphabetically for consistency
+    # Convert to set first to avoid duplicates if any, then to list for sorting
+    sorted_urls.extend(sorted(list(set(other_urls))))
+
+    return sorted_urls
 
 
-def get_episode_range_urls():
-    """Get URLs for all episode range pages."""
-    return [
-        f"{BASE_URL}/episodes-501-now",
-        f"{BASE_URL}/401-now",
-        f"{BASE_URL}/episodes-301-now",
-        f"{BASE_URL}/episodes-201-300",
-        f"{BASE_URL}/episodes-101-200",
-        f"{BASE_URL}/episodes0-100",
-        f"{BASE_URL}/specialmixes",
-    ]
+def get_episode_range_urls(soup):
+    """Dynamically get URLs for all episode range pages from navigation."""
+    range_urls = []
+    # Find the "RADIO SHOWS" navigation item
+    radio_shows_li = None
+    for li in soup.find_all("li", class_="folder-collection folder"):
+        a_tag = li.find("a", string="RADIO SHOWS")
+        if a_tag:
+            radio_shows_li = li
+            break
+
+    if radio_shows_li:
+        # Find all <a> tags within the "folder-child" div under "RADIO SHOWS"
+        folder_child_ul = radio_shows_li.find("div", class_="folder-child")
+        if folder_child_ul:
+            for a_tag in folder_child_ul.find_all("a"):
+                href = a_tag.get("href")
+                if href:
+                    full_url = urljoin(BASE_URL, href)
+                    range_urls.append(full_url)
+    return range_urls
 
 
 def extract_episode_data(url, soup):
@@ -199,7 +252,7 @@ def scrape_episodes(episode_urls):
             print(f"  -> Audio: {data['audio_type']}: {data['audio_url']}")
             print(f"  -> Tracks: {len(data['tracklist'])}")
         else:
-            print(f"  -> Failed to fetch")
+            print("  -> Failed to fetch")
         time.sleep(0.5)  # Rate limiting
 
     return episodes
@@ -207,44 +260,101 @@ def scrape_episodes(episode_urls):
 
 def main():
     all_episode_urls = set()
+    new_episodes_found = False
+    episodes_to_scrape_urls = []
 
-    # First get homepage
-    print(f"Fetching homepage: {BASE_URL}")
-    soup = get_soup(BASE_URL)
-    if soup:
-        print("Extracting episode links from homepage...")
-        episode_urls = extract_episode_links(soup)
-        all_episode_urls.update(episode_urls)
-        print(f"Found {len(episode_urls)} episode links from homepage")
+    # 1. Get the very latest episode from the homepage
+    print(f"Fetching homepage for latest episode: {BASE_URL}")
+    homepage_soup = get_soup(BASE_URL)
+    if not homepage_soup:
+        print("Failed to fetch homepage. Exiting.")
+        return
+
+    homepage_episode_links = extract_episode_links(homepage_soup)
+    current_latest_episode_url = None
+    if homepage_episode_links:
+        # Assuming the first link in the sorted list from homepage is the latest
+        current_latest_episode_url = homepage_episode_links[0]
+        print(f"Latest episode on site: {current_latest_episode_url}")
+    else:
+        print("No episode links found on homepage. Exiting.")
+        return
+
+    # 2. Read previously stored latest episode
+    previously_stored_latest_episode_url = read_latest_episode_info()
+
+    # 3. Compare and decide to scrape
+    if previously_stored_latest_episode_url == current_latest_episode_url:
+        print("No new episodes found. Exiting scraper.")
+        return
+    else:
+        print("New episode(s) found! Starting scrape.")
+        new_episodes_found = True
+        # 4. Update stored latest episode
+        write_latest_episode_info(current_latest_episode_url)
+
+    # Collect all episode URLs from homepage and range pages
+    all_episode_urls.update(homepage_episode_links)
 
     # Also get episode range pages
     print("\nFetching episode range pages...")
-    range_urls = get_episode_range_urls()
+    range_urls = get_episode_range_urls(homepage_soup)
     for range_url in range_urls:
         print(f"Fetching: {range_url}")
         soup = get_soup(range_url)
         if soup:
             episode_urls = extract_episode_links(soup)
-            new_count = len([u for u in episode_urls if u not in all_episode_urls])
             all_episode_urls.update(episode_urls)
-            print(f"  -> Found {len(episode_urls)} links ({new_count} new)")
+            print(f"  -> Found {len(episode_urls)} links") # Simplified print
+        time.sleep(0.5) # Add sleep here for range page fetching
 
-    episode_urls = sorted(all_episode_urls)
-    print(f"\nTotal unique episode URLs: {len(episode_urls)}")
+    all_episode_urls_sorted = sorted(list(all_episode_urls), key=lambda url: _get_episode_number_from_url(url) or 0, reverse=True)
 
-    # Also check for pagination/episode range pages
-    # The site has pages like /episodes-501-now, /401-now, etc.
-    # For now, we'll work with what we have from homepage
 
-    if episode_urls:
-        episodes = scrape_episodes(episode_urls)
-
-        # Save to JSON
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(episodes, f, indent=2, ensure_ascii=False)
-        print(f"\nSaved {len(episodes)} episodes to {OUTPUT_FILE}")
+    if new_episodes_found and previously_stored_latest_episode_url:
+        print(f"Filtering for episodes newer than: {previously_stored_latest_episode_url}")
+        previously_stored_episode_number = _get_episode_number_from_url(previously_stored_latest_episode_url)
+        if previously_stored_episode_number is not None:
+            for url in all_episode_urls_sorted:
+                episode_number = _get_episode_number_from_url(url)
+                if episode_number is not None and episode_number > previously_stored_episode_number:
+                    episodes_to_scrape_urls.append(url)
+            print(f"Found {len(episodes_to_scrape_urls)} new episodes to scrape.")
+        else:
+            print(f"Could not determine episode number for previously stored URL: {previously_stored_latest_episode_url}. Scraping all new episodes found.")
+            episodes_to_scrape_urls = all_episode_urls_sorted # Scrape all if we can't filter reliably
+    elif new_episodes_found and not previously_stored_latest_episode_url:
+        print("First run or no previous latest episode stored. Scraping all available episodes.")
+        episodes_to_scrape_urls = all_episode_urls_sorted
     else:
-        print("No episode links found")
+        print("No new episodes to scrape.")
+        return # Should ideally not be reached due to earlier check, but as a safeguard
+
+    if episodes_to_scrape_urls:
+        episodes = scrape_episodes(episodes_to_scrape_urls)
+
+        # 5. Adjust main() to load existing episodes.json, append new data, and save.
+        existing_episodes = []
+        try:
+            with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
+                existing_episodes = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            print(f"No existing {OUTPUT_FILE} found or it's empty/corrupt. Starting fresh.")
+
+        # Combine new and existing episodes, remove duplicates based on URL
+        # Create a dictionary for quick lookup and to maintain order of new episodes
+        combined_episodes_dict = {ep['url']: ep for ep in existing_episodes}
+        for new_ep in episodes:
+            combined_episodes_dict[new_ep['url']] = new_ep
+
+        final_episodes = list(combined_episodes_dict.values())
+        final_episodes.sort(key=lambda ep: _get_episode_number_from_url(ep['url']) or 0, reverse=True) # Sort to keep consistent order
+
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(final_episodes, f, indent=2, ensure_ascii=False)
+        print(f"\nSaved {len(episodes)} new episodes. Total {len(final_episodes)} episodes to {OUTPUT_FILE}")
+    else:
+        print("No new episode links to scrape after filtering.")
 
 
 if __name__ == "__main__":
