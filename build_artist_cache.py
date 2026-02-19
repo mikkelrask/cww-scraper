@@ -321,7 +321,7 @@ def main():
     }
 
     print(f"\nResolving {len(artists_to_lookup)} artists...")
-    for artist, normalized, count in tqdm(artists_to_lookup, unit="artist"):
+    for i, (artist, normalized, count) in enumerate(tqdm(artists_to_lookup, unit="artist")):
         result = resolve_artist(artist, beets_artists, cache, mb_lookup=not args.no_mb)
 
         if result:
@@ -334,12 +334,24 @@ def main():
             # Cache both full name and normalized
             cache[artist] = result_for_cache
             cache[normalized] = result_for_cache
+
+            # Print match in real-time
+            if match_type in ("beets_exact", "beets_normalized"):
+                print(f"\n  ✓ beets match: {artist} -> {result_for_cache.get('original', 'unknown')}")
+            elif match_type in ("mb_full", "mb_normalized"):
+                print(f"\n  ✓ MB match: {artist} -> {result_for_cache.get('canonical_name', 'unknown')}")
+
+            # Incremental save every 50 artists
+            if (i + 1) % 50 == 0:
+                save_cache(cache, args.cache)
+                print(f"  [Checkpoint: {len(cache)} entries saved]")
         else:
             stats["not_found"] += 1
             # Don't cache failures - might find them later with different approach
 
         time.sleep(REQUEST_DELAY)
 
+    # Final save
     save_cache(cache, args.cache)
 
     print(f"\nCache saved to {args.cache}")
