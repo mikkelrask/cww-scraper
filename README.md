@@ -4,11 +4,11 @@ A Python web scraper that extracts episode data from [Chances With Wolves](https
 
 This scraper checks for new episodes before scraping and only extracts data for episodes not previously recorded. It saves the latest episode URL to `latest_episode_info.json` to enable incremental updates.
 
-## What it extracts
-
 - Episode thumbnails
 - Audio URLs (Soundcloud or Archive.org)
-- Tracklists (track title and artist)
+- Episode tracklists (track title and artist)
+- **Artist Resolution**: Cache-based artist lookup with MusicBrainz integration to find canonical names and MBIDs.
+- **Library Matching**: Robust matching of scraped tracks against local beets library using both names and MBIDs.
 
 ## Requirements
 
@@ -31,34 +31,50 @@ uv pip install -r requirements.txt
 ### Scrape episodes
 
 ```bash
-source .venv/bin/activate
-python scraper.py
+uv run scraper.py
 ```
 
-Output is saved to `episodes.json`. The latest scraped episode URL is stored in `latest_episode_info.json`.
+### Build and Clean Artist Cache
+
+The artist cache maps scraped artist names to canonical MusicBrainz names and IDs. This reduces API calls and improves matching accuracy.
+
+```bash
+# Build the cache (hits MusicBrainz API)
+uv run build_artist_cache.py
+
+# Clean the cache (re-verify existing entries using similarity scoring)
+uv run clean_artist_cache.py
+```
 
 ### Tag your beets library
 
 Match scraped tracks against your beets music library and tag them with the `CWW` genre:
 
 ```bash
-source .venv/bin/activate
-python add_cww_genre.py                    # Tag matched tracks
-python add_cww_genre.py --dry-run           # Preview without tagging
-python add_cww_genre.py --input episodes.json --dry-run  # Custom input
+# Preview matches (recommended first step)
+uv run add_cww_genre.py --dry-run
+
+# Run the actual tagging
+uv run add_cww_genre.py
+
+# Specify custom input files
+uv run add_cww_genre.py --input episodes.json --cache artist_cache.json
 ```
 
-Preview output is saved to `cww_tag_preview.json`.
+Matches are performed using:
+1.  **MBID overlap**: If both your library and the show track have a MusicBrainz Artist ID.
+2.  **Name overlap**: Fuzzy matching between normalized artist/title pairs.
+
+Preview results are saved to `cww_tag_preview.json`.
 
 ## Linting
 
 ```bash
-source .venv/bin/activate
-ruff check .
+uv run ruff check .
 ```
 
 Auto-fix issues:
 
 ```bash
-ruff check . --fix
+uv run ruff check . --fix
 ```
