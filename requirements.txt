@@ -3,3 +3,4 @@ beautifulsoup4
 ruff
 beets
 tqdm
+python-dotenv

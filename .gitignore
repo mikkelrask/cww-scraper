@@ -39,3 +39,5 @@ ENV/
 *.json
 !package.json
 matched_artists.txt
+.env
+.env.local

@@ -85,8 +85,19 @@ build_artist_cache.py   # One-time: fetch and cache all artists
 ## Rate Limiting Strategy
 
 - MusicBrainz allows 1 request/second without auth
-- With auth (email): 5 requests/second
+- With auth (email in User-Agent): 5 requests/second
 - Cache aggressively — once looked up, never need to fetch again
+
+## Configuration
+
+API credentials stored in `.env` (not committed to git):
+
+```bash
+# .env
+MUSICBRAINZ_USER_AGENT="cww-scraper/1.0 (your@email.com)"
+```
+
+The User-Agent format is `application-name/version (contact email)`.
 
 ## File Outputs
 
@@ -102,24 +113,39 @@ build_artist_cache.py   # One-time: fetch and cache all artists
 ## API Reference
 
 ```python
+import os
+import time
 import requests
+from typing import Any
 
-def lookup_artist(name: str) -> dict | None:
+USER_AGENT = os.environ.get("MUSICBRAINZ_USER_AGENT", "cww-scraper/1.0 (https://github.com/username/cww-scraper)")
+
+def lookup_artist(name: str, retries: int = 3) -> dict[str, Any] | None:
     url = "https://musicbrainz.org/ws/2/artist"
     params = {
         "query": name,
         "fmt": "json",
         "limit": 1
     }
-    headers = {
-        "User-Agent": "cww-scraper/1.0 (your@email)"
-    }
-    resp = requests.get(url, params=params, headers=headers)
-    data = resp.json()
-    if data.get("artists"):
-        return data["artists"][0]
+    headers = {"User-Agent": USER_AGENT}
+    
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("artists"):
+                    return data["artists"][0]
+            elif resp.status_code == 503:
+                time.sleep(2 ** attempt)  # Rate limited, backoff
+            else:
+                return None
+        except requests.RequestException:
+            time.sleep(2 ** attempt)
     return None
 ```
+
+**Rate limit:** ~5 requests/second with proper User-Agent, ~1 without.
 
 ## Estimated Work
 
