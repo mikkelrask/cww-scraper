@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
+"""
+Tag tracks in beets library with CWW genre based on scraped episode tracklists.
+"""
 
 import json
 import re
+import sys
 import argparse
 from collections import defaultdict
+from pathlib import Path
+from typing import Any
 
 from beets import config
-from beets.library import Library
-
+from beets.library import Library, Item
 
 GENRE_TAG = "CWW"
 
@@ -37,14 +42,33 @@ def normalize(text: str) -> str:
 # LOAD BEETS LIBRARY
 # ----------------------------
 
-def load_library():
+def load_library() -> Library:
+    """Load and return the beets library."""
     config.read()
-    library_path = config["library"].as_filename()
+
+    try:
+        library_path = config["library"].as_filename()
+    except KeyError:
+        print("Error: No library configured in beets.", file=sys.stderr)
+        print("Run 'beets config' to verify your configuration.", file=sys.stderr)
+        sys.exit(1)
+
+    if not library_path:
+        print("Error: library path not set in beets config.", file=sys.stderr)
+        sys.exit(1)
+
+    library_file = Path(library_path)
+    if not library_file.exists():
+        print(f"Error: Library file not found: {library_path}", file=sys.stderr)
+        print("Run 'beets ls' to verify your library exists.", file=sys.stderr)
+        sys.exit(1)
+
     return Library(library_path)
 
 
-def build_index(lib):
-    artist_index = defaultdict(list)
+def build_index(lib: Library) -> dict[str, list[tuple[str, Item]]]:
+    """Build an index of artists and titles from the beets library."""
+    artist_index: dict[str, list[tuple[str, Item]]] = defaultdict(list)
 
     for item in lib.items():
         artist = normalize(item.artist)
@@ -60,8 +84,13 @@ def build_index(lib):
 # MATCHING
 # ----------------------------
 
-def find_matches(data, artist_index):
-    matches = []
+def find_matches(
+    data: list[dict[str, Any]],
+    artist_index: dict[str, list[tuple[str, Item]]],
+) -> list[Item]:
+    """Find matching tracks in the beets library."""
+    matches: list[Item] = []
+    seen_items: set[int] = set()
     seen_items = set()
 
     for episode in data:
@@ -88,8 +117,9 @@ def find_matches(data, artist_index):
 # TAGGING
 # ----------------------------
 
-def tag_items(items, dry_run):
-    preview = []
+def tag_items(items: list[Item], dry_run: bool) -> list[dict[str, str]]:
+    """Tag items with CWW genre, return preview of changes."""
+    preview: list[dict[str, str]] = []
 
     for item in items:
         existing = item.genre or ""
@@ -117,17 +147,28 @@ def tag_items(items, dry_run):
 # MAIN
 # ----------------------------
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--input", default=DEFAULT_INPUT_JSON)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Tag tracks with CWW genre")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without tagging")
+    parser.add_argument(
+        "--input",
+        default=DEFAULT_INPUT_JSON,
+        help="Path to episodes JSON file",
+    )
 
     args = parser.parse_args()
 
     print("Loading episode JSON...")
 
-    with open(args.input, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(args.input, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"Error: Input file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in {args.input}: {e}", file=sys.stderr)
+        sys.exit(1)
 
     print("Loading beets library...")
     lib = load_library()

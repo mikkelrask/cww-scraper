@@ -1,8 +1,8 @@
-# CWW Scraper
+# CWW Scraper 🐺
 
-A Python web scraper that extracts episode data from [Chances With Wolves](https://www.chanceswithwolves.com).
+A Python web scraper that extracts episode data from [Chances With Wolves](https://www.chanceswithwolves.com) — a radio show featuring obscure finds, deep cuts, and sonic oddities.
 
-This scraper now checks for new episodes before scraping and only extracts data for episodes not previously recorded. It saves the latest episode URL to `latest_episode_info.json` to enable incremental updates.
+This scraper checks for new episodes before scraping and only extracts data for episodes not previously recorded. It saves the latest episode URL to `latest_episode_info.json` to enable incremental updates.
 
 ## What it extracts
 
@@ -14,21 +14,22 @@ This scraper now checks for new episodes before scraping and only extracts data 
 
 - Python 3
 - `uv` (for virtual environment and dependency management)
-- `requests`, `beautifulsoup4`, `ruff`
+- `requests`, `beautifulsoup4`, `beets`, `ruff`
 
 ## Setup
 
-First, create and activate a virtual environment and install dependencies:
+Create and activate a virtual environment:
+
 ```bash
 uv venv .venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
-uv pip install ruff # ruff is used for linting
 ```
 
-## Run
+## Usage
 
-Activate the virtual environment and run the scraper:
+### Scrape episodes
+
 ```bash
 source .venv/bin/activate
 python scraper.py
@@ -36,16 +37,28 @@ python scraper.py
 
 Output is saved to `episodes.json`. The latest scraped episode URL is stored in `latest_episode_info.json`.
 
-## Lint
+### Tag your beets library
 
-Activate the virtual environment and run ruff:
+Match scraped tracks against your beets music library and tag them with the `CWW` genre:
+
+```bash
+source .venv/bin/activate
+python add_cww_genre.py                    # Tag matched tracks
+python add_cww_genre.py --dry-run           # Preview without tagging
+python add_cww_genre.py --input episodes.json --dry-run  # Custom input
+```
+
+Preview output is saved to `cww_tag_preview.json`.
+
+## Linting
+
 ```bash
 source .venv/bin/activate
 ruff check .
 ```
 
-To auto-fix issues:
+Auto-fix issues:
+
 ```bash
-source .venv/bin/activate
 ruff check . --fix
 ```
