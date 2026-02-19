@@ -7,7 +7,7 @@ Python web scraping project that extracts episode data from chanceswithwolves.co
 - **Language**: Python 3
 - **Dependencies**: requests, beautifulsoup4, beets, ruff
 - **Virtual Environment**: `.venv` (use `source .venv/bin/activate` to activate)
-- **Entry Points**: `scraper.py`, `add_cww_genre.py`
+- **Entry Points**: `scraper.py`, `build_artist_cache.py`, `clean_artist_cache.py`, `add_cww_genre.py`
 
 ## Commands
 
@@ -22,30 +22,27 @@ uv pip install -r requirements.txt
 ### Linting
 
 ```bash
-source .venv/bin/activate
-ruff check .
+uv run ruff check .
 ```
 
 Auto-fix issues:
 
 ```bash
-ruff check . --fix
+uv run ruff check . --fix
 ```
 
 ### Running the Scraper
 
 ```bash
-source .venv/bin/activate
-python scraper.py
+uv run scraper.py
 ```
 
 ### Running the Genre Tagger
 
 ```bash
-source .venv/bin/activate
-python add_cww_genre.py                    # Tag matched tracks
-python add_cww_genre.py --dry-run           # Preview without tagging
-python add_cww_genre.py --input episodes.json --dry-run  # Custom input
+uv run add_cww_genre.py                    # Tag matched tracks
+uv run add_cww_genre.py --dry-run           # Preview without tagging
+uv run add_cww_genre.py --input episodes.json --dry-run  # Custom input
 ```
 
 ### Running Tests
@@ -53,15 +50,13 @@ python add_cww_genre.py --input episodes.json --dry-run  # Custom input
 No tests exist yet. When added, run with:
 
 ```bash
-source .venv/bin/activate
-pytest
+uv run pytest
 ```
 
 Run a single test:
 
 ```bash
-source .venv/bin/activate
-pytest path/to/test_file.py::test_function_name
+uv run pytest path/to/test_file.py::test_function_name
 ```
 
 ## Code Style
@@ -127,11 +122,18 @@ def extract_episode_links(soup: BeautifulSoup) -> list[str]:
 
 ### Web Scraping
 
-- Always include User-Agent header
-- Rate limit requests (0.5s sleep between requests)
-- Retry failed requests with exponential backoff
+- Always include User-Agent header (from `.env` or default)
+- Rate limit requests (4 req/sec max for MusicBrainz)
+- Use `difflib.SequenceMatcher` similarity (80-85% threshold) to verify MusicBrainz Lucene scores
 - Handle missing data gracefully (check for None before accessing attributes)
 - Use BeautifulSoup methods: `find()`, `find_all()`, `get()` with fallbacks
+
+### Artist Matching Strategy
+
+1.  **Normalize**: Standardize artist/title strings (lowercase, remove parens, replace symbols).
+2.  **MBID Match**: High confidence matching using MusicBrainz Artist IDs from the cache.
+3.  **Name Match**: Fallback matching using normalized artist/title strings.
+4.  **Verification**: Always use `calculate_similarity` for MB API results to avoid false positives from relative Lucene scores.
 
 ### File Operations
 
@@ -148,13 +150,16 @@ def extract_episode_links(soup: BeautifulSoup) -> list[str]:
 
 ```
 cww-scraper/
-├── scraper.py              # Main scraper
-├── add_cww_genre.py        # Tag tracks in beets library with CWW genre
-├── requirements.txt        # Dependencies
-├── episodes.json           # Episode data (generated)
+├── scraper.py               # Main scraper (episodes.json)
+├── build_artist_cache.py    # MB lookup for canonical names/IDs
+├── clean_artist_cache.py    # Verify/prune cache using similarity
+├── add_cww_genre.py         # Tag tracks in beets library
+├── requirements.txt         # Dependencies
+├── episodes.json            # Episode data (generated)
+├── artist_cache.json        # Artist mapping (generated)
 ├── latest_episode_info.json # Last scraped episode URL (generated)
-├── cww_tag_preview.json   # Tag preview output (generated)
-└── .venv/                 # Virtual environment
+├── cww_tag_preview.json    # Tag preview output (generated)
+└── .venv/                  # Virtual environment
 ```
 
 ## Common Tasks
@@ -174,5 +179,5 @@ cww-scraper/
 ### Debug
 
 ```bash
-python -m pdb scraper.py
+uv run python -m pdb scraper.py
 ```
