@@ -13,6 +13,7 @@ from typing import Any
 
 from beets import config
 from beets.library import Library, Item
+from tqdm import tqdm
 
 GENRE_TAG = "CWW"
 
@@ -99,24 +100,7 @@ def load_library() -> Library:
     return Library(library_path)
 
 
-def get_artist_mbid(
-    artist_raw: str,
-    cache: dict[str, Any],
-) -> str | None:
-    """Get MusicBrainz artist ID from cache."""
-    if not artist_raw or not cache:
-        return None
-
-    # Try exact match first
-    if artist_raw in cache:
-        return cache[artist_raw].get("mbid")
-
-    # Try normalized
-    normalized = normalize(artist_raw)
-    if normalized in cache:
-        return cache[normalized].get("mbid")
-
-    return None
+# Removed helper functions that were replaced by internal logic in find_matches
 
 
 # ----------------------------
@@ -124,50 +108,102 @@ def get_artist_mbid(
 # ----------------------------
 
 def find_matches(
-    data: list[dict[str, Any]],
+    episodes: list[dict[str, Any]],
     lib: Library,
-    artist_cache: dict[str, Any] | None = None,
+    artist_cache: dict[str, Any],
 ) -> list[Item]:
     """Find matching tracks in the beets library."""
-    matches: list[Item] = []
-    seen_items: set[int] = set()
-    name_matches = 0
-
+    
     if artist_cache is None:
         artist_cache = {}
-
-    # Build a set of (artist, title) tuples from scraped data for fast lookup
-    print("  Building scraped tracks index...", flush=True)
-    scraped_tracks: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    for episode in data:
+    
+    print("  Building target lookup set from scraped tracks...")
+    # target_keys: set of (type, artist_ident, title_norm)
+    # type can be 'mbid' or 'name'
+    target_keys = set()
+    
+    for episode in episodes:
         for track in episode.get("tracklist", []):
-            artist_raw = track.get("artist", "")
-            title_raw = track.get("track", "")
-            if artist_raw and title_raw:
-                key = (normalize(artist_raw), normalize(title_raw))
-                scraped_tracks[key].append(track)
+            artist_raw = track.get("artist", "").strip()
+            title_raw = track.get("track", "").strip()
+            if not artist_raw or not title_raw:
+                continue
+                
+            title_norm = normalize(title_raw)
+            artist_norm = normalize(artist_raw)
+            
+            if not title_norm or not artist_norm:
+                continue
+                
+            # 1. Always add the raw scraped name (normalized)
+            target_keys.add(('name', artist_norm, title_norm))
+            
+            # 2. Add cache-based names and MBIDs
+            # Check for name in cache (direct or normalized)
+            cached = artist_cache.get(artist_raw) or artist_cache.get(artist_norm)
+            if cached:
+                mbid = cached.get("mbid")
+                if mbid:
+                    target_keys.add(('mbid', mbid, title_norm))
+                
+                canonical = cached.get("canonical_name")
+                if canonical:
+                    canonical_norm = normalize(canonical)
+                    if canonical_norm:
+                        target_keys.add(('name', canonical_norm, title_norm))
 
-    print(f"  Unique scraped tracks: {len(scraped_tracks)}", flush=True)
-    print("  Searching beets library...", flush=True)
+    print(f"  Created {len(target_keys)} matching targets.")
 
-    count = 0
-    for item in lib.items():
-        count += 1
-        if count % 5000 == 0:
-            print(f"    Checked {count} library items...", flush=True)
+    matches: list[Item] = []
+    seen_ids: set[int] = set()
+    mbid_matches = 0
+    name_matches = 0
+    
+    print("  Iterating through beets library...")
+    # Get total count for progress bar
+    total_items = len(lib.items())
+    
+    for item in tqdm(lib.items(), total=total_items, unit="item"):
+        # Beets items have attributes like 'artist', 'title', 'mb_artistid'
+        title_norm = normalize(item.title)
+        if not title_norm:
+            continue
+        
+        matched = False
+        
+        # Check MBID first (most accurate)
+        mbid = item.get("mb_artistid")
+        if mbid and ('mbid', mbid, title_norm) in target_keys:
+            if item.id not in seen_ids:
+                matches.append(item)
+                seen_ids.add(item.id)
+                mbid_matches += 1
+                matched = True
+        
+        if matched:
+            continue
+            
+        # Check artist name
+        artist_norm = normalize(item.artist)
+        if artist_norm and ('name', artist_norm, title_norm) in target_keys:
+            if item.id not in seen_ids:
+                matches.append(item)
+                seen_ids.add(item.id)
+                name_matches += 1
+                matched = True
+                
+        if matched:
+            continue
+            
+        # Optional: Check album artist for various artists / compilations
+        albumartist_norm = normalize(item.albumartist)
+        if albumartist_norm and albumartist_norm != artist_norm and ('name', albumartist_norm, title_norm) in target_keys:
+            if item.id not in seen_ids:
+                matches.append(item)
+                seen_ids.add(item.id)
+                name_matches += 1
 
-        item_artist = normalize(item.artist)
-        item_title = normalize(item.title)
-        key = (item_artist, item_title)
-
-        if key in scraped_tracks and item.id not in seen_items:
-            matches.append(item)
-            seen_items.add(item.id)
-            name_matches += 1
-
-    print(f"    Checked {count} library items - done!")
-    print(f"  Name matches: {name_matches}")
-
+    print(f"  Matches found: {len(matches)} (MBID: {mbid_matches}, Name: {name_matches})")
     return matches
 
 

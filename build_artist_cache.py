@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from collections import Counter
 from typing import Any
+from difflib import SequenceMatcher
 
 import requests
 from beets import config
@@ -139,15 +140,28 @@ def normalize(text: str) -> str:
     return text
 
 
+def calculate_similarity(a: str, b: str) -> int:
+    """Calculate string similarity ratio as a percentage (0-100)."""
+    if not a or not b:
+        return 0
+    # Use normalized versions for comparison
+    norm_a = normalize(a)
+    norm_b = normalize(b)
+    ratio = SequenceMatcher(None, norm_a, norm_b).ratio()
+    return int(ratio * 100)
+
+
 def lookup_artist_with_uncertain(
     name: str, min_score: int = 85
 ) -> tuple[dict | None, dict | None]:
     """
     Look up artist on MusicBrainz with retry logic and confidence scoring.
     Returns (result, uncertain_result) where uncertain_result has low confidence.
+    Uses string similarity to verify MusicBrainz matches against the query.
     """
     url = "https://musicbrainz.org/ws/2/artist"
-    params = {"query": name, "fmt": "json", "limit": 1}
+    # Fetch top 10 results to find the best string match
+    params = {"query": name, "fmt": "json", "limit": 10}
     headers = {"User-Agent": USER_AGENT}
 
     for attempt in range(3):
@@ -155,31 +169,53 @@ def lookup_artist_with_uncertain(
             resp = requests.get(url, params=params, headers=headers, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
-                if data.get("artists"):
-                    artist = data["artists"][0]
-                    score = artist.get("score", 0)
+                if not data.get("artists"):
+                    return (None, None)
 
+                best_artist = None
+                best_similarity = -1
+
+                for artist in data["artists"]:
+                    mb_name = artist.get("name", "")
+                    # Calculate similarity between our query and MB artist name
+                    sim = calculate_similarity(name, mb_name)
+
+                    # Also check aliases for better matching
+                    for alias in artist.get("aliases", []):
+                        alias_name = alias.get("name", "")
+                        sim = max(sim, calculate_similarity(name, alias_name))
+
+                    if sim > best_similarity:
+                        best_similarity = sim
+                        best_artist = artist
+
+                    # If we found an exact match, we can stop
+                    if sim == 100:
+                        break
+
+                if best_artist:
                     result_data = {
-                        "mbid": artist.get("id"),
-                        "canonical_name": artist.get("name"),
-                        "sort_name": artist.get("sort-name"),
-                        "score": score,
+                        "mbid": best_artist.get("id"),
+                        "canonical_name": best_artist.get("name"),
+                        "sort_name": best_artist.get("sort-name"),
+                        "mb_score": int(best_artist.get("score", 0)),
+                        "score": best_similarity,  # Repurpose score to mean our similarity
                         "source": "musicbrainz",
                     }
 
-                    if score >= min_score:
+                    if best_similarity >= min_score:
                         return (result_data, None)
                     else:
                         # Return as uncertain - below threshold but MB found something
                         return (None, result_data)
-                return (None, None)  # No match found
+                return (None, None)
             elif resp.status_code == 503:
-                wait = 2 ** attempt
+                wait = 2**attempt
                 time.sleep(wait)
             else:
                 return (None, None)
         except requests.RequestException:
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
     return (None, None)
 
 
