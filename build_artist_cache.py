@@ -61,7 +61,6 @@ def extract_artists(episodes: list[dict]) -> list[tuple[str, int]]:
 
 def load_beets_library() -> dict[str, dict[str, Any]]:
     """Load artists from beets library for local matching."""
-    import re  # Ensure re is imported
 
     try:
         config.read()
@@ -78,7 +77,7 @@ def load_beets_library() -> dict[str, dict[str, Any]]:
         print(f"  Warning: Library file not found: {library_path}", file=sys.stderr)
         return {}
 
-    print(f"  Opening library...", flush=True)
+    print("  Opening library...", flush=True)
     try:
         lib = Library(library_path)
     except Exception as e:
@@ -140,8 +139,13 @@ def normalize(text: str) -> str:
     return text
 
 
-def lookup_artist(name: str) -> dict | None:
-    """Look up artist on MusicBrainz with retry logic."""
+def lookup_artist_with_uncertain(
+    name: str, min_score: int = 85
+) -> tuple[dict | None, dict | None]:
+    """
+    Look up artist on MusicBrainz with retry logic and confidence scoring.
+    Returns (result, uncertain_result) where uncertain_result has low confidence.
+    """
     url = "https://musicbrainz.org/ws/2/artist"
     params = {"query": name, "fmt": "json", "limit": 1}
     headers = {"User-Agent": USER_AGENT}
@@ -153,21 +157,30 @@ def lookup_artist(name: str) -> dict | None:
                 data = resp.json()
                 if data.get("artists"):
                     artist = data["artists"][0]
-                    return {
+                    score = artist.get("score", 0)
+
+                    result_data = {
                         "mbid": artist.get("id"),
                         "canonical_name": artist.get("name"),
                         "sort_name": artist.get("sort-name"),
+                        "score": score,
                         "source": "musicbrainz",
                     }
-                return None  # No match found
+
+                    if score >= min_score:
+                        return (result_data, None)
+                    else:
+                        # Return as uncertain - below threshold but MB found something
+                        return (None, result_data)
+                return (None, None)  # No match found
             elif resp.status_code == 503:
                 wait = 2 ** attempt
                 time.sleep(wait)
             else:
-                return None
+                return (None, None)
         except requests.RequestException:
             time.sleep(2 ** attempt)
-    return None
+    return (None, None)
 
 
 def resolve_artist(
@@ -175,6 +188,8 @@ def resolve_artist(
     beets_artists: dict[str, dict],
     cache: dict,
     mb_lookup: bool = True,
+    min_score: int = 85,
+    uncertain_matches: list | None = None,
 ) -> dict | None:
     """
     Resolve scraped artist name to canonical form.
@@ -214,13 +229,25 @@ def resolve_artist(
         return None
 
     # 5. MB API with full name
-    result = lookup_artist(scraped_artist)
+    result, uncertain = lookup_artist_with_uncertain(scraped_artist, min_score)
+    if uncertain and uncertain_matches is not None:
+        uncertain_matches.append({
+            "scraped": scraped_artist,
+            "mb_suggestion": uncertain.get("canonical_name"),
+            "score": uncertain.get("score"),
+        })
     if result:
         result["match_type"] = "mb_full"
         return result
 
     # 6. MB API with normalized name
-    result = lookup_artist(normalized)
+    result, uncertain = lookup_artist_with_uncertain(normalized, min_score)
+    if uncertain and uncertain_matches is not None:
+        uncertain_matches.append({
+            "scraped": normalized,
+            "mb_suggestion": uncertain.get("canonical_name"),
+            "score": uncertain.get("score"),
+        })
     if result:
         result["match_type"] = "mb_normalized"
         return result
@@ -262,6 +289,18 @@ def main():
         "--no-mb",
         action="store_true",
         help="Skip MusicBrainz API calls",
+    )
+    parser.add_argument(
+        "--min-score",
+        type=int,
+        default=85,
+        help="Minimum confidence score for MB matches (0-100, default 85)",
+    )
+    parser.add_argument(
+        "--export-uncertain",
+        type=str,
+        default="",
+        help="Export uncertain matches to file",
     )
     args = parser.parse_args()
 
@@ -317,12 +356,22 @@ def main():
         "cache_normalized": 0,
         "mb_full": 0,
         "mb_normalized": 0,
+        "uncertain": 0,
         "not_found": 0,
     }
 
+    # Track uncertain matches for manual review
+    uncertain_matches: list[dict] = []
+
     print(f"\nResolving {len(artists_to_lookup)} artists...")
+    print(f"Min MB score: {args.min_score}%")
     for i, (artist, normalized, count) in enumerate(tqdm(artists_to_lookup, unit="artist")):
-        result = resolve_artist(artist, beets_artists, cache, mb_lookup=not args.no_mb)
+        result = resolve_artist(
+            artist, beets_artists, cache,
+            mb_lookup=not args.no_mb,
+            min_score=args.min_score,
+            uncertain_matches=uncertain_matches,
+        )
 
         if result:
             match_type = result.get("match_type", "unknown")
@@ -359,6 +408,13 @@ def main():
     print("\nMatch statistics:")
     for key, count in stats.items():
         print(f"  {key}: {count}")
+
+    # Export uncertain matches if requested
+    if args.export_uncertain and uncertain_matches:
+        with open(args.export_uncertain, "w", encoding="utf-8") as f:
+            json.dump(uncertain_matches, f, indent=2, ensure_ascii=False)
+        print(f"\nUncertain matches exported to: {args.export_uncertain}")
+        print(f"  Total uncertain: {len(uncertain_matches)}")
 
 
 if __name__ == "__main__":
