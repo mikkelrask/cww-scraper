@@ -38,3 +38,4 @@ ENV/
 # Project specific
 *.json
 !package.json
+matched_artists.txt
