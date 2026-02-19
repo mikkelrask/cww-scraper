@@ -113,6 +113,40 @@ def build_index(lib: Library) -> dict[str, list[tuple[str, Item]]]:
     return artist_index
 
 
+def build_mbid_index(lib: Library) -> dict[str, list[tuple[str, Item]]]:
+    """Build an index by MusicBrainz artist ID from the beets library."""
+    mbid_index: dict[str, list[tuple[str, Item]]] = defaultdict(list)
+
+    for item in lib.items():
+        mb_artist_id = getattr(item, "mb_artist_id", None)
+        if mb_artist_id:
+            title = normalize(item.title)
+            if title:
+                mbid_index[mb_artist_id].append((title, item))
+
+    return mbid_index
+
+
+def get_artist_mbid(
+    artist_raw: str,
+    cache: dict[str, Any],
+) -> str | None:
+    """Get MusicBrainz artist ID from cache."""
+    if not artist_raw or not cache:
+        return None
+
+    # Try exact match first
+    if artist_raw in cache:
+        return cache[artist_raw].get("mbid")
+
+    # Try normalized
+    normalized = normalize(artist_raw)
+    if normalized in cache:
+        return cache[normalized].get("mbid")
+
+    return None
+
+
 # ----------------------------
 # MATCHING
 # ----------------------------
@@ -120,13 +154,14 @@ def build_index(lib: Library) -> dict[str, list[tuple[str, Item]]]:
 def find_matches(
     data: list[dict[str, Any]],
     artist_index: dict[str, list[tuple[str, Item]]],
+    mbid_index: dict[str, list[tuple[str, Item]]],
     artist_cache: dict[str, Any] | None = None,
 ) -> list[Item]:
-    """Find matching tracks in the beets library using artist cache for canonical names."""
+    """Find matching tracks in the beets library using MBID or name matching."""
     matches: list[Item] = []
     seen_items: set[int] = set()
-    cache_used = 0
-    direct_matches = 0
+    mbid_matches = 0
+    name_matches = 0
 
     if artist_cache is None:
         artist_cache = {}
@@ -135,36 +170,37 @@ def find_matches(
         for track in episode.get("tracklist", []):
             artist_raw = track.get("artist", "")
             title_raw = track.get("track", "")
-
-            # Try to get canonical artist name from cache
-            canonical_artist = get_canonical_artist(artist_raw, artist_cache)
-            
-            # Normalize the canonical name for matching
-            artist = normalize(canonical_artist)
             title = normalize(title_raw)
 
-            if artist not in artist_index:
-                # Fall back to original normalized name if cache didn't help
-                if canonical_artist != artist_raw:
-                    artist = normalize(artist_raw)
-                    if artist not in artist_index:
-                        continue
-                else:
-                    continue
+            matched = False
 
-            for lib_title, item in artist_index[artist]:
-                if lib_title == title:
-                    if item.id not in seen_items:
-                        matches.append(item)
-                        seen_items.add(item.id)
-                        if canonical_artist != artist_raw:
-                            cache_used += 1
-                        else:
-                            direct_matches += 1
+            # Try MBID matching first (more reliable)
+            if artist_cache and mbid_index:
+                mbid = get_artist_mbid(artist_raw, artist_cache)
+                if mbid and mbid in mbid_index:
+                    for lib_title, item in mbid_index[mbid]:
+                        if lib_title == title and item.id not in seen_items:
+                            matches.append(item)
+                            seen_items.add(item.id)
+                            mbid_matches += 1
+                            matched = True
+                            break
+
+            # Fall back to name matching if no MBID match
+            if not matched:
+                artist = normalize(artist_raw)
+                if artist in artist_index:
+                    for lib_title, item in artist_index[artist]:
+                        if lib_title == title and item.id not in seen_items:
+                            matches.append(item)
+                            seen_items.add(item.id)
+                            name_matches += 1
+                            matched = True
+                            break
 
     if artist_cache:
-        print(f"  Direct matches: {direct_matches}")
-        print(f"  Cache-assisted matches: {cache_used}")
+        print(f"  MBID matches: {mbid_matches}")
+        print(f"  Name matches: {name_matches}")
 
     return matches
 
@@ -248,9 +284,17 @@ def main() -> None:
 
     print("Indexing library...")
     artist_index = build_index(lib)
+    mbid_index = build_mbid_index(lib)
+    print(f"  Artists indexed: {len(artist_index)}")
+    print(f"  MBID entries indexed: {len(mbid_index)}")
 
     print("Finding matches...")
-    matches = find_matches(data, artist_index, artist_cache if not args.no_cache else None)
+    matches = find_matches(
+        data,
+        artist_index,
+        mbid_index,
+        artist_cache if not args.no_cache else None,
+    )
 
     print(f"Tracks to tag: {len(matches)}")
 
