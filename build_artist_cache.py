@@ -401,7 +401,8 @@ def main():
 
     print(f"\nResolving {len(artists_to_lookup)} artists...")
     print(f"Min MB score: {args.min_score}%")
-    for i, (artist, normalized, count) in enumerate(tqdm(artists_to_lookup, unit="artist")):
+    pbar = tqdm(artists_to_lookup, unit="artist")
+    for i, (artist, normalized, count) in enumerate(pbar):
         result = resolve_artist(
             artist, beets_artists, cache,
             mb_lookup=not args.no_mb,
@@ -420,16 +421,16 @@ def main():
             cache[artist] = result_for_cache
             cache[normalized] = result_for_cache
 
-            # Print match in real-time
+            # Use tqdm.write instead of print to avoid breaking the progress bar
             if match_type in ("beets_exact", "beets_normalized"):
-                print(f"\n  ✓ beets match: {artist} -> {result_for_cache.get('original', 'unknown')}")
+                pbar.write(f"  ✓ beets match: {artist} -> {result_for_cache.get('original', 'unknown')}")
             elif match_type in ("mb_full", "mb_normalized"):
-                print(f"\n  ✓ MB match: {artist} -> {result_for_cache.get('canonical_name', 'unknown')}")
+                pbar.write(f"  ✓ MB match: {artist} -> {result_for_cache.get('canonical_name', 'unknown')}")
 
             # Incremental save every 50 artists
             if (i + 1) % 50 == 0:
                 save_cache(cache, args.cache)
-                print(f"  [Checkpoint: {len(cache)} entries saved]")
+                pbar.write(f"  [Checkpoint: {len(cache)} entries saved]")
         else:
             stats["not_found"] += 1
             # Don't cache failures - might find them later with different approach
