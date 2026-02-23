@@ -1,5 +1,7 @@
 #!/usr/bin/env bash 
 
+cd -- "$( dirname -- "${BASH_SOURCE[0]}" )"
+
 # Verify virtual environment exists - create it if it doesn't
 if [ ! -d .venv ]; then
   uv venv .venv
