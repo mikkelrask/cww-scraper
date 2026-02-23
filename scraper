@@ -10,14 +10,7 @@ source .venv/bin/activate >/dev/null 2>&1
 # INSTALL DEPENDENCIES
 uv pip install -r requirements.txt >/dev/null 2>&1
 
-# MAKE SURE ARTIST CACHE EXISTS
-if [ ! -f artist_cache.json ]; then
-  echo "[ERROR] No artist cache found. Please run 'uv run build_artist_cache.py' to build cache. \
-    Note that this can take several hours."
-  exit 1
-fi
-
-# RUN TAGGER SCRIPT
-echo "[INFO] Adding CWW genre tag matched tracks.."
+# RUN SCRAPER
+echo "[INFO] Running scraper.."
 uv run add_cww_genre.py || echo "[Error] Could not tag tracks.."
-echo "[INFO] Tagging done. Exit"
+echo "[INFO] Scraping done. Exit"
