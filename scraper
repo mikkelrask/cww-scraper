@@ -12,5 +12,5 @@ uv pip install -r requirements.txt >/dev/null 2>&1
 
 # RUN SCRAPER
 echo "[INFO] Running scraper.."
-uv run add_cww_genre.py || echo "[Error] Could not tag tracks.."
+uv run scraper.py || echo "[Error] Could not scrape www.chanceswithwolves.com.."
 echo "[INFO] Scraping done. Exit"
