@@ -215,7 +215,8 @@ def tag_items(items: list[Item], dry_run: bool) -> list[dict[str, str]]:
     """Tag items with CWW genre, return preview of changes."""
     preview: list[dict[str, str]] = []
 
-    for item in items:
+    print(f"  {'Pre-viewing' if dry_run else 'Tagging'} {len(items)} items...")
+    for item in tqdm(items, unit="track", disable=len(items) < 10):
         existing = item.genre or ""
 
         genres = {g.strip() for g in existing.split(";") if g.strip()}
@@ -259,6 +260,12 @@ def main() -> None:
         action="store_true",
         help="Skip using artist cache for matching",
     )
+    parser.add_argument(
+        "--min-score",
+        type=int,
+        default=0,
+        help="Minimum similarity score to use from MB cache (0-100)",
+    )
 
     args = parser.parse_args()
 
@@ -280,6 +287,17 @@ def main() -> None:
         print(f"Loading artist cache from {args.cache}...")
         artist_cache = load_artist_cache(args.cache)
         print(f"  Cache entries: {len(artist_cache)}")
+        
+        if args.min_score > 0:
+            original_count = len(artist_cache)
+            # Filter cache: Keep beets entries or MB entries with sufficient score
+            artist_cache = {
+                k: v for k, v in artist_cache.items() 
+                if v.get("source") == "beets" or v.get("score", 0) >= args.min_score
+            }
+            removed = original_count - len(artist_cache)
+            if removed > 0:
+                print(f"  Filtered out {removed} entries with score < {args.min_score}")
 
     print("Loading beets library...")
     lib = load_library()
