@@ -1,5 +1,9 @@
 #!/usr/bin/env bash 
 
+# Verify virtual environment exists - create it if it doesn't
+if [ ! -d .venv ]; then
+  uv venv .venv
+fi
 # ACTIVATE VIRTUAL ENVIRONMENT
 source .venv/bin/activate >/dev/null 2>&1
 
