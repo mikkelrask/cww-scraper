@@ -15,6 +15,32 @@ from beets import config
 from beets.library import Library, Item
 from tqdm import tqdm
 
+
+# ----------------------------
+# BEETS VERSION COMPATIBILITY
+# ----------------------------
+
+# Beets >=2.8.0 uses "genres" (DelimitedString/list); older versions use "genre" (string).
+# Detect which field is available at runtime.
+_ITEM_HAS_GENRES = hasattr(Item, "_fields") and "genres" in Item._fields
+
+
+def _get_genres(item: Item) -> list[str]:
+    """Get genres from an item, always returning a list."""
+    if _ITEM_HAS_GENRES:
+        return item.genres or []
+    else:
+        raw = item.genre or ""
+        return [g.strip() for g in raw.split(";") if g.strip()]
+
+
+def _set_genres(item: Item, genres_list: list[str]) -> None:
+    """Set genres on an item from a list of strings."""
+    if _ITEM_HAS_GENRES:
+        item.genres = genres_list
+    else:
+        item.genre = "; ".join(genres_list)
+
 GENRE_TAG = "CWW"
 
 DEFAULT_INPUT_JSON = "episodes.json"
@@ -217,12 +243,12 @@ def tag_items(items: list[Item], dry_run: bool) -> list[dict[str, str]]:
 
     print(f"  {'Pre-viewing' if dry_run else 'Tagging'} {len(items)} items...")
     for item in tqdm(items, unit="track", disable=len(items) < 10):
-        existing = item.genre or ""
+        existing = _get_genres(item)
 
-        genres = {g.strip() for g in existing.split(";") if g.strip()}
+        genres_set = set(existing)
 
-        if GENRE_TAG not in genres:
-            genres.add(GENRE_TAG)
+        if GENRE_TAG not in genres_set:
+            genres_set.add(GENRE_TAG)
 
             preview.append({
                 "artist": item.artist,
@@ -231,7 +257,7 @@ def tag_items(items: list[Item], dry_run: bool) -> list[dict[str, str]]:
             })
 
             if not dry_run:
-                item.genre = "; ".join(sorted(genres))
+                _set_genres(item, sorted(genres_set))
                 item.store()
                 item.write()
 
@@ -309,7 +335,13 @@ def main() -> None:
         artist_cache if not args.no_cache else None,
     )
 
-    print(f"Tracks to tag: {len(matches)}")
+    actual_to_tag = sum(
+        1 for item in matches
+        if GENRE_TAG not in _get_genres(item)
+    )
+
+    print(f"Matches found: {len(matches)}")
+    print(f"New tags to apply: {actual_to_tag}")
 
     preview = tag_items(matches, args.dry_run)
 

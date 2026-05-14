@@ -32,6 +32,45 @@ CACHE_FILE = "artist_cache.json"
 INPUT_FILE = "episodes.json"
 REQUEST_DELAY = 0.25  # 4 req/sec to be safe
 
+def dedupe_cache(cache: dict) -> dict:
+    """
+    Deduplicate cache entries based on MBID (or fallback to canonical name).
+    """
+
+    print("\nDeduplicating cache...")
+
+    seen = {}
+    duplicates = 0
+
+    for key, data in cache.items():
+        unique_id = data.get("mbid") or data.get("canonical_name")
+
+        if not unique_id:
+            # keep weird edge cases
+            seen[key] = data
+            continue
+
+        if unique_id not in seen:
+            seen[unique_id] = data
+        else:
+            duplicates += 1
+
+    print(f"Removed {duplicates} duplicate entries")
+    print(f"Final unique entries: {len(seen)}")
+
+    return seen
+def load_file_index(path: str) -> set[str]:
+    """Load pre-generated file index (one path per line)."""
+    if not Path(path).exists():
+        print(f"Error: file index not found: {path}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Loading file index from {path}...")
+    with open(path, "r", encoding="utf-8") as f:
+        files = {line.strip() for line in f if line.strip()}
+
+    print(f"Loaded {len(files)} file paths into memory")
+    return files
 
 def load_episodes(path: str) -> list[dict]:
     """Load episodes from JSON file."""
@@ -338,8 +377,14 @@ def main():
         default="",
         help="Export uncertain matches to file",
     )
+    parser.add_argument(
+    "--dedupe",
+    action="store_true",
+    help="Remove duplicate cache entries based on MBID",
+)
     args = parser.parse_args()
 
+    
     print(f"Loading episodes from {args.input}...")
     episodes = load_episodes(args.input)
     artists = extract_artists(episodes)
