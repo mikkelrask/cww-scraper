@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-Build artist cache from MusicBrainz API.
-Extracts unique artists from episodes.json and looks up canonical names.
-Uses beets library for local matching before hitting the API.
+Build artist cache from local Beets library and MusicBrainz API.
+
+Extracts unique artists from episodes.json and resolves them to canonical names.
+Prioritizes matching against a local Beets library. If MUSICBRAINZ_USER_AGENT
+is set in .env, it will fall back to the MusicBrainz API for unknown artists.
+If not set, it operates in a fast local-only mode.
 """
 
 import json
@@ -15,7 +18,7 @@ from collections import Counter
 from typing import Any
 from difflib import SequenceMatcher
 
-import requests
+# import requests  # Moved to lazy import in lookup_artist_with_uncertain
 from beets import config
 from beets.library import Library
 from dotenv import load_dotenv
@@ -23,10 +26,7 @@ from tqdm import tqdm
 
 load_dotenv()
 
-USER_AGENT = os.environ.get(
-    "MUSICBRAINZ_USER_AGENT",
-    "cww-scraper/1.0 (https://github.com/username/cww-scraper)",
-)
+USER_AGENT = os.environ.get("MUSICBRAINZ_USER_AGENT")
 
 CACHE_FILE = "artist_cache.json"
 INPUT_FILE = "episodes.json"
@@ -198,6 +198,7 @@ def lookup_artist_with_uncertain(
     Returns (result, uncertain_result) where uncertain_result has low confidence.
     Uses string similarity to verify MusicBrainz matches against the query.
     """
+    import requests
     url = "https://musicbrainz.org/ws/2/artist"
     # Fetch top 10 results to find the best string match
     params = {"query": name, "fmt": "json", "limit": 10}
@@ -333,7 +334,7 @@ def resolve_artist(
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Build artist cache from MusicBrainz")
+    parser = argparse.ArgumentParser(description="Build artist cache from Beets and MusicBrainz")
     parser.add_argument(
         "--input",
         default=INPUT_FILE,
@@ -480,7 +481,8 @@ def main():
             stats["not_found"] += 1
             # Don't cache failures - might find them later with different approach
 
-        time.sleep(REQUEST_DELAY)
+        if not args.no_mb:
+            time.sleep(REQUEST_DELAY)
 
     # Final save
     save_cache(cache, args.cache)
@@ -489,7 +491,8 @@ def main():
     print(f"Total entries: {len(cache)}")
     print("\nMatch statistics:")
     for key, count in stats.items():
-        print(f"  {key}: {count}")
+        if count > 0 or key == "not_found":
+            print(f"  {key}: {count}")
 
     # Export uncertain matches if requested
     if args.export_uncertain and uncertain_matches:
