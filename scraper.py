@@ -13,7 +13,7 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
-from urllib.parse import urljoin, unquote
+from urllib.parse import urljoin, unquote, urlparse
 
 BASE_URL = "https://www.chanceswithwolves.com"
 OUTPUT_FILE = "episodes.json"
@@ -21,10 +21,22 @@ LATEST_EPISODE_INFO_FILE = "latest_episode_info.json"
 DEFAULT_REQUEST_DELAY = 0.5
 
 def _get_episode_number_from_url(url: str) -> int | None:
-    """Extracts the episode number from a URL like '.../episode-XXX'."""
-    match = re.search(r"episode-(\d+)", url)
-    if match:
-        return int(match.group(1))
+    """Extracts the episode number from a URL.
+
+    Handles standard (episode-123), no-dash (episode123), and common
+    typos (episod123, episdoe-123, epidsode-123, episoe-123).
+    """
+    patterns = [
+        r"episode[-_]?(\d+)",
+        r"episod(\d+)",
+        r"episdoe[-_]?(\d+)",
+        r"epidsode[-_]?(\d+)",
+        r"episoe[-_]?(\d+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
     return None
 
 def read_latest_episode_info() -> str | None:
@@ -115,10 +127,34 @@ def get_episode_range_urls(soup: BeautifulSoup) -> list[str]:
     return range_urls
 
 
+def _extract_episode_number_from_page(soup: BeautifulSoup) -> int | None:
+    """Extract episode number from page content (title, headings, body text)."""
+    title_tag = soup.find("title")
+    if title_tag:
+        match = re.search(r"Episode\s+(\d+)", title_tag.get_text(), re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+    for tag_name in ("h1", "h2", "h3"):
+        for tag in soup.find_all(tag_name):
+            match = re.search(r"Episode\s+(\d+)", tag.get_text(), re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+
+    for cls in ("episode", "content", "sqs-block"):
+        for div in soup.find_all("div", class_=re.compile(cls)):
+            match = re.search(r"Episode\s+(\d+)", div.get_text(), re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+
+    return None
+
+
 def extract_episode_data(url: str, soup: BeautifulSoup) -> dict[str, Any]:
     """Extract thumbnail, audio URL, and tracklist from episode page."""
     data = {
         "url": url,
+        "episode_number": _get_episode_number_from_url(url) or _extract_episode_number_from_page(soup),
         "thumbnail": None,
         "audio_url": None,
         "audio_type": None,
@@ -136,11 +172,19 @@ def extract_episode_data(url: str, soup: BeautifulSoup) -> dict[str, Any]:
     soundcloud_iframe = soup.find("iframe", src=re.compile(r"soundcloud\.com/player"))
     if soundcloud_iframe:
         src = unquote(soundcloud_iframe.get("src", ""))
-        match = re.search(r"tracks?/([0-9]+)", src)
+        # Try the api.soundcloud.com/tracks/{id} URL from the embed params
+        match = re.search(r"api\.soundcloud\.com/tracks/([0-9]+)", src)
         if match:
             track_id = match.group(1)
             data["audio_url"] = (
-                f"https://soundcloud.com/chanceswithwolves/tracks/{track_id}"
+                f"https://api.soundcloud.com/tracks/{track_id}"
+            )
+            data["audio_type"] = "soundcloud"
+        else:
+            # Fall back to constructing from page slug
+            path = urlparse(url).path
+            data["audio_url"] = (
+                f"https://soundcloud.com/chanceswithwolves{path}"
             )
             data["audio_type"] = "soundcloud"
 
@@ -321,7 +365,9 @@ def save_episodes(existing: list[dict[str, Any]], new: list[dict[str, Any]]) -> 
 
     final = list(combined.values())
     final.sort(
-        key=lambda ep: _get_episode_number_from_url(ep["url"]) or 0,
+        key=lambda ep: ep.get("episode_number")
+        or _get_episode_number_from_url(ep["url"])
+        or 0,
         reverse=True,
     )
 
